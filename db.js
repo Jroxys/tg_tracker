@@ -1,69 +1,77 @@
-const Database = require('better-sqlite3');
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+const filePath = path.join(dataDir, 'store.json');
 
-const db = new Database(path.join(dataDir, 'trackbot.db'));
-
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS tracks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  chat_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'generic',
-  difficulty_score INTEGER NOT NULL DEFAULT 30,
-  streak INTEGER NOT NULL DEFAULT 0,
-  best_streak INTEGER NOT NULL DEFAULT 0,
-  last_streak_date TEXT,
-  last_reminder_date TEXT,
-  active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS tasks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  track_id INTEGER NOT NULL,
-  description TEXT NOT NULL,
-  assigned_date TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  origin TEXT NOT NULL DEFAULT 'auto',
-  difficulty_feedback TEXT,
-  completed_at TEXT,
-  FOREIGN KEY (track_id) REFERENCES tracks(id)
-);
-
-CREATE TABLE IF NOT EXISTS word_progress (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  track_id INTEGER NOT NULL,
-  word TEXT NOT NULL,
-  translation TEXT NOT NULL,
-  seen_count INTEGER NOT NULL DEFAULT 0,
-  first_seen TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS journal_entries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  chat_id TEXT NOT NULL,
-  entry_date TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_track_date ON tasks(track_id, assigned_date);
-CREATE INDEX IF NOT EXISTS idx_tracks_chat ON tracks(chat_id);
-CREATE INDEX IF NOT EXISTS idx_journal_chat_date ON journal_entries(chat_id, entry_date);
-`);
-
-// Var olan eski veritabanlarında yeni kolonlar eksikse ekle (migration)
-function tryAlter(sql) {
-  try { db.exec(sql); } catch (e) { /* kolon zaten varsa hata verir, yok say */ }
+function load() {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (e) {
+    return {};
+  }
 }
-tryAlter(`ALTER TABLE tracks ADD COLUMN last_streak_date TEXT`);
-tryAlter(`ALTER TABLE tracks ADD COLUMN last_reminder_date TEXT`);
-tryAlter(`ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'`);
 
-module.exports = db;
+const state = load();
+let saveTimeout = null;
+
+function saveNow() {
+  fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
+}
+
+// Kısa aralıklı ard arda yazmaları tek dosya yazma işlemine indiriyoruz (performans)
+function save() {
+  if (saveTimeout) return;
+  saveTimeout = setTimeout(() => {
+    saveNow();
+    saveTimeout = null;
+  }, 50);
+}
+
+class Collection {
+  constructor(name) {
+    this.name = name;
+    if (!state[name]) state[name] = [];
+    if (!state._nextId) state._nextId = {};
+    if (!state._nextId[name]) state._nextId[name] = 1;
+  }
+
+  insert(fields) {
+    const id = state._nextId[this.name]++;
+    const row = { id, ...fields };
+    state[this.name].push(row);
+    save();
+    return row;
+  }
+
+  get(id) {
+    return state[this.name].find(r => r.id === Number(id));
+  }
+
+  all(filterFn) {
+    const rows = filterFn ? state[this.name].filter(filterFn) : [...state[this.name]];
+    return rows;
+  }
+
+  find(filterFn) {
+    return state[this.name].find(filterFn);
+  }
+
+  update(id, patch) {
+    const row = this.get(id);
+    if (!row) return null;
+    Object.assign(row, patch);
+    save();
+    return row;
+  }
+}
+
+module.exports = {
+  tracks: new Collection('tracks'),
+  tasks: new Collection('tasks'),
+  wordProgress: new Collection('wordProgress'),
+  journalEntries: new Collection('journalEntries'),
+  saveNow,
+};

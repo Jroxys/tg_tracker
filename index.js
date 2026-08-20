@@ -28,14 +28,13 @@ if (!process.env.GROQ_API_KEY) {
 }
 
 function getTracks(chatId, activeOnly = true) {
-  const q = activeOnly
-    ? `SELECT * FROM tracks WHERE chat_id = ? AND active = 1 ORDER BY id`
-    : `SELECT * FROM tracks WHERE chat_id = ? ORDER BY id`;
-  return db.prepare(q).all(String(chatId));
+  return db.tracks
+    .all(t => t.chat_id === String(chatId) && (!activeOnly || t.active === 1))
+    .sort((a, b) => a.id - b.id);
 }
 
 function getTrackById(id) {
-  return db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id);
+  return db.tracks.get(id);
 }
 
 function taskLine(task) {
@@ -80,12 +79,21 @@ bot.onText(/\/newtrack (.+)/, (msg, match) => {
     return;
   }
 
-  const info = db.prepare(
-    `INSERT INTO tracks (chat_id, name, type) VALUES (?, ?, ?)`
-  ).run(String(chatId), name, type);
+  const track = db.tracks.insert({
+    chat_id: String(chatId),
+    name,
+    type,
+    difficulty_score: 30,
+    streak: 0,
+    best_streak: 0,
+    last_streak_date: null,
+    last_reminder_date: null,
+    active: 1,
+    created_at: new Date().toISOString(),
+  });
 
   bot.sendMessage(chatId,
-    `✅ "${name}" track'i oluşturuldu (id: ${info.lastInsertRowid}, tip: ${type === 'language' ? 'dil öğrenimi' : 'genel'})\n\n` +
+    `✅ "${name}" track'i oluşturuldu (id: ${track.id}, tip: ${type === 'language' ? 'dil öğrenimi' : 'genel'})\n\n` +
     `Görevini görmek için /today yaz.`
   );
 });
@@ -113,7 +121,7 @@ bot.onText(/\/today/, async (msg) => {
     return;
   }
   for (const track of tracks) {
-    await getOrCreateTodayTask(track); // eksikse oluşturur
+    await getOrCreateTodayTask(track);
     const tasks = getTodayTasks(track.id);
     const header = `— ${track.name} —`;
     const body = tasks.map(taskLine).join('\n');
@@ -141,7 +149,7 @@ bot.onText(/\/addtask (\d+) (.+)/, (msg, match) => {
 bot.onText(/\/done (\d+)/, (msg, match) => {
   const chatId = msg.chat.id;
   const taskId = parseInt(match[1], 10);
-  const task = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(taskId);
+  const task = db.tasks.get(taskId);
 
   if (!task) {
     bot.sendMessage(chatId, 'Böyle bir görev bulunamadı.');
@@ -174,7 +182,7 @@ bot.on('callback_query', (query) => {
   const [prefix, taskId, trackId, feedback] = query.data.split(':');
   if (prefix !== 'fb') return;
 
-  const task = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(taskId);
+  const task = db.tasks.get(taskId);
   const track = getTrackById(trackId);
   if (!task || !track) return;
 
@@ -243,7 +251,6 @@ bot.onText(/\/status/, (msg) => {
 });
 
 // ---- Otomatik günlük hatırlatma (cron) ----
-// Varsayılan: her gün 07:00 UTC (Türkiye yazında UTC+3 -> 10:00). REMINDER_CRON ile özelleştirilebilir.
 const reminderCron = process.env.REMINDER_CRON || '0 7 * * *';
 cron.schedule(reminderCron, async () => {
   const tracksToRemind = getTracksNeedingReminder();
