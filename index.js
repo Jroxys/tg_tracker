@@ -23,6 +23,9 @@ if (!token) {
 
 const bot = new TelegramBot(token, { polling: true });
 console.log('Bot çalışıyor...');
+bot.on('message', (msg) => {
+  console.log(`[MESAJ GELDİ] chat_id=${msg.chat.id} text="${msg.text}"`);
+});
 if (!process.env.GROQ_API_KEY) {
   console.log('Not: GROQ_API_KEY tanımlı değil, görevler sabit listeden üretilecek (fallback mod).');
 }
